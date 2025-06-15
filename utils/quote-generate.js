@@ -786,6 +786,54 @@ class QuoteGenerate {
     const w = image.width
     const h = image.height
 
+    // 如果r为0或很小，返回原图不做处理
+    if (r <= 0 || r < 2) {
+      return image
+    }
+
+    // 创建带圆角的画布
+    const canvas = createCanvas(w, h)
+    const canvasCtx = canvas.getContext('2d')
+
+    // 创建圆角矩形剪切路径
+    canvasCtx.beginPath()
+    canvasCtx.moveTo(r, 0)
+    canvasCtx.lineTo(w - r, 0)
+    canvasCtx.quadraticCurveTo(w, 0, w, r)
+    canvasCtx.lineTo(w, h - r)
+    canvasCtx.quadraticCurveTo(w, h, w - r, h)
+    canvasCtx.lineTo(r, h)
+    canvasCtx.quadraticCurveTo(0, h, 0, h - r)
+    canvasCtx.lineTo(0, r)
+    canvasCtx.quadraticCurveTo(0, 0, r, 0)
+    canvasCtx.closePath()
+    canvasCtx.clip()
+
+    // 绘制原图
+    canvasCtx.drawImage(image, 0, 0, w, h)
+
+    return canvas
+  }
+
+  // 新增：专门用于头像的圆形裁剪函数
+  roundAvatar (image, r) {
+    // 检查输入是否为有效的Image或Canvas
+    if (!image || (!image.width && !image.height)) {
+      console.error('roundAvatar: 无效的图片对象')
+      // 返回一个默认的圆形图片
+      const size = r * 2 || 100
+      const canvas = createCanvas(size, size)
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = '#cccccc'
+      ctx.beginPath()
+      ctx.arc(size/2, size/2, size/2, 0, 2 * Math.PI)
+      ctx.fill()
+      return canvas
+    }
+
+    const w = image.width
+    const h = image.height
+
     // 创建正方形画布以确保圆形效果
     const size = Math.min(w, h)
     const canvas = createCanvas(size, size)
@@ -981,7 +1029,7 @@ class QuoteGenerate {
 
     // 绘制头像（确保为圆形）
     if (avatar) {
-      const roundAvatar = this.roundImage(avatar, avatarSize / 2)
+      const roundAvatar = this.roundAvatar(avatar, avatarSize / 2) // 使用专门的头像圆形函数
       canvasCtx.drawImage(roundAvatar, avatarPosX, avatarPosY, avatarSize, avatarSize)
     }
     
@@ -1002,14 +1050,15 @@ class QuoteGenerate {
           // 动态内容将在视频合成阶段单独处理
           console.log('为动态媒体预留空间:', `${mediaWidth}x${mediaHeight} at (${mediaPosX}, ${mediaPosY})`)
           
-          // 可选：绘制一个调试边框来显示媒体位置
-          // canvasCtx.strokeStyle = 'rgba(255, 0, 0, 0.3)'
-          // canvasCtx.lineWidth = 2
-          // canvasCtx.strokeRect(mediaPosX, mediaPosY, mediaWidth, mediaHeight)
-          
         } else if (media.width && media.height) {
-          // 常规图片/Canvas对象
-          canvasCtx.drawImage(this.roundImage(media, 5 * scale), mediaPosX, mediaPosY, mediaWidth, mediaHeight)
+          // 对于静态媒体，根据媒体类型决定是否应用圆角
+          if (mediaType === 'sticker') {
+            // 贴纸保持原始形状，不应用圆角
+            canvasCtx.drawImage(media, mediaPosX, mediaPosY, mediaWidth, mediaHeight)
+          } else {
+            // 其他媒体类型（如照片）应用轻微圆角
+            canvasCtx.drawImage(this.roundImage(media, 5 * scale), mediaPosX, mediaPosY, mediaWidth, mediaHeight)
+          }
         } else {
           console.error('媒体对象无效，跳过绘制')
         }
