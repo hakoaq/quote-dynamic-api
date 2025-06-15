@@ -457,7 +457,7 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
     }
 
     const timestamp = Date.now()
-    const outputFile = path.join(tempDir, `animated_quote_${timestamp}.webp`)
+    const outputFile = path.join(tempDir, `animated_quote_${timestamp}.webp`) // 确保是webp格式
     
     // 找到包含动态媒体的语录
     const animatedQuote = quoteImages.find(quote => quote.animatedMedia)
@@ -467,7 +467,7 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
 
     const canvas = animatedQuote.canvas
     const animatedMedia = animatedQuote.animatedMedia
-    const overlayFile = path.join(tempDir, `overlay_${timestamp}.png`) // 修复：添加缺少的右括号
+    const overlayFile = path.join(tempDir, `overlay_${timestamp}.png`)
     
     // 创建包含完整语录的叠加层，为动态媒体留出透明区域
     await createQuoteOverlay(overlayFile, canvas.width, canvas.height, parm, canvas, animatedMedia)
@@ -519,7 +519,7 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
         console.log(`媒体显示尺寸: ${mediaWidth}x${mediaHeight}`)
         console.log(`媒体位置: ${mediaPosX}, ${mediaPosY}`)
 
-        // 修改FFmpeg命令构建为WebP格式
+        // 修正FFmpeg命令以生成WebP格式
         const command = ffmpeg()
           .input(animatedMediaPath)
           .inputOptions(['-stream_loop', '3'])
@@ -532,13 +532,13 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
           ])
           .outputOptions([
             '-map', '[output]',
-            '-c:v', 'libwebp',
-            '-quality', '90',
-            '-method', '4',
-            '-loop', '0',
-            `-t`, `${Math.max(videoDuration * 3, 3)}`
+            '-c:v', 'libwebp',    // 使用WebP编码器
+            '-quality', '90',     // WebP质量
+            '-method', '4',       // WebP压缩方法
+            '-loop', '0',         // 无限循环
+            `-t`, `${Math.max(videoDuration * 3, 3)}` // 确保足够的播放时长
           ])
-          .format('webp')
+          .format('webp')         // 明确指定WebP格式
           .output(outputFile)
 
         command.on('start', (commandLine) => {
@@ -554,6 +554,13 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
           
           try {
             const webpBuffer = fs.readFileSync(outputFile)
+            
+            // 验证生成的文件是否为有效的WebP
+            if (!webpBuffer.slice(0, 4).equals(Buffer.from('RIFF'))) {
+              throw new Error('生成的文件不是有效的WebP格式')
+            }
+            
+            console.log(`生成的WebP文件大小: ${webpBuffer.length} 字节`)
             
             // 清理临时文件
             const filesToClean = [overlayFile, outputFile]
