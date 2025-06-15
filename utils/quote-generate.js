@@ -9,6 +9,8 @@ const smartcrop = require('smartcrop-sharp')
 const runes = require('runes')
 const zlib = require('zlib')
 const { Telegram } = require('telegraf')
+const ffmpeg = require('fluent-ffmpeg')
+const path = require('path')
 
 const emojiDb = new EmojiDbLib({ useDefaultDb: true })
 
@@ -109,7 +111,8 @@ class ColorContrast {
 
 class QuoteGenerate {
   constructor (botToken) {
-    this.telegram = new Telegram(botToken)
+    // 只有在提供了有效botToken时才初始化Telegram实例
+    this.telegram = botToken ? new Telegram(botToken) : null
   }
 
   async avatarImageLatters (letters, color) {
@@ -170,36 +173,56 @@ class QuoteGenerate {
     ]
 
     const nameIndex = Math.abs(user.id) % 7
-
     const avatarColor = avatarColorArray[nameIndex]
 
     if (avatarImageCache) {
       avatarImage = avatarImageCache
     } else if (user.photo && user.photo.url) {
-      avatarImage = await loadImage(user.photo.url)
+      try {
+        console.log('尝试加载头像:', user.photo.url)
+        
+        // 将JPEG转换为PNG以避免JPEG支持问题
+        const imageBuffer = await loadImageFromUrl(user.photo.url)
+        const pngBuffer = await sharp(imageBuffer).png().toBuffer()
+        avatarImage = await loadImage(pngBuffer)
+      } catch (error) {
+        console.error('加载头像URL失败:', error)
+        console.log('使用字母头像作为备用')
+        avatarImage = await loadImage(await this.avatarImageLatters(nameLatters, avatarColor))
+      }
     } else {
       try {
         let userPhoto, userPhotoUrl
 
-        if (user.photo && user.photo.big_file_id) userPhotoUrl = await this.telegram.getFileLink(user.photo.big_file_id).catch(() => {})
+        // 只有在有Telegram实例时才尝试获取Telegram相关数据
+        if (this.telegram) {
+          if (user.photo && user.photo.big_file_id) userPhotoUrl = await this.telegram.getFileLink(user.photo.big_file_id).catch(() => {})
 
-        if (!userPhotoUrl) {
-          const getChat = await this.telegram.getChat(user.id).catch(() => {})
+          if (!userPhotoUrl) {
+            const getChat = await this.telegram.getChat(user.id).catch(() => {})
 
-          if (getChat && getChat.photo && getChat.photo.big_file_id) userPhoto = getChat.photo.big_file_id
+            if (getChat && getChat.photo && getChat.photo.big_file_id) userPhoto = getChat.photo.big_file_id
 
-          if (userPhoto) userPhotoUrl = await this.telegram.getFileLink(userPhoto).catch(() => {})
+            if (userPhoto) userPhotoUrl = await this.telegram.getFileLink(userPhoto).catch(() => {})
+            else if (user.username) userPhotoUrl = `https://telega.one/i/userpic/320/${user.username}.jpg`
+          }
 
-          else if (user.username) userPhotoUrl = `https://telega.one/i/userpic/320/${user.username}.jpg`
-
-          else avatarImage = await loadImage(await this.avatarImageLatters(nameLatters, avatarColor)).catch(() => {})
+          if (userPhotoUrl) avatarImage = await loadImage(userPhotoUrl).catch(() => {})
+        } else {
+          // 没有Telegram实例时，优先使用提供的URL或生成字母头像
+          if (user.username) {
+            userPhotoUrl = `https://telega.one/i/userpic/320/${user.username}.jpg`
+            avatarImage = await loadImage(userPhotoUrl).catch(() => {})
+          }
         }
-
-        if (userPhotoUrl) avatarImage = await loadImage(userPhotoUrl).catch(() => {})
+        
+        if (!avatarImage) {
+          avatarImage = await loadImage(await this.avatarImageLatters(nameLatters, avatarColor))
+        }
 
         avatarCache.set(cacheKey, avatarImage)
       } catch (error) {
-        avatarImage = await loadImage(await this.avatarImageLatters(nameLatters, avatarColor)).catch(() => {})
+        avatarImage = await loadImage(await this.avatarImageLatters(nameLatters, avatarColor))
       }
     }
 
@@ -215,37 +238,131 @@ class QuoteGenerate {
     })
   }
 
-  async downloadMediaImage (media, mediaSize, type = 'id', crop = true) {
+  async downloadMediaImage (media, mediaSize, type = 'id', crop = true, isAnimated = false) {
     let mediaUrl
-    if (type === 'id') mediaUrl = await this.telegram.getFileLink(media).catch(console.error)
-    else mediaUrl = media
-    const load = await loadImageFromUrl(mediaUrl)
-    if (crop || mediaUrl.match(/.webp/)) {
-      const imageSharp = sharp(load)
-      const imageMetadata = await imageSharp.metadata()
-      const sharpPng = await imageSharp.png({ lossless: true, force: true }).toBuffer()
+    if (type === 'id' && this.telegram) {
+      mediaUrl = await this.telegram.getFileLink(media).catch(console.error)
+    } else {
+      mediaUrl = media
+    }
+    
+    // 检查是否为动态媒体
+    const isWebm = mediaUrl && mediaUrl.match(/\.webm/i)
+    const isGif = mediaUrl && mediaUrl.match(/\.gif/i)
+    const isDynamic = isAnimated || isWebm || isGif
+    
+    if (isDynamic) {
+      console.log('处理动态媒体:', mediaUrl)
+      // 处理动态媒体
+      return this.processAnimatedMedia(mediaUrl, mediaSize, crop)
+    }
+    
+    try {
+      const load = await loadImageFromUrl(mediaUrl)
+      if (crop || (mediaUrl && mediaUrl.match(/.webp/))) {
+        const imageSharp = sharp(load)
+        const imageMetadata = await imageSharp.metadata()
+        const sharpPng = await imageSharp.png({ lossless: true, force: true }).toBuffer()
 
-      if (!imageMetadata || !imageMetadata.width || !imageMetadata.height || !sharpPng) {
+        if (!imageMetadata || !imageMetadata.width || !imageMetadata.height || !sharpPng) {
+          return loadImage(load)
+        }
+
+        let croppedImage
+
+        if (imageMetadata.format === 'webp') {
+          const jimpImage = await Jimp.read(sharpPng)
+          croppedImage = await jimpImage.autocrop().getBuffer(JimpMime.png)
+        } else {
+          const smartcropResult = await smartcrop.crop(sharpPng, { width: mediaSize, height: imageMetadata.height })
+          const crop = smartcropResult.topCrop
+
+          croppedImage = imageSharp.extract({ width: crop.width, height: crop.height, left: crop.x, top: crop.y })
+          croppedImage = await imageSharp.png({ lossless: true, force: true }).toBuffer()
+        }
+
+        return loadImage(croppedImage)
+      } else {
         return loadImage(load)
       }
+    } catch (error) {
+      console.error('加载媒体失败:', error)
+      // 返回一个占位符图片
+      const canvas = createCanvas(mediaSize, mediaSize)
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = '#cccccc'
+      ctx.fillRect(0, 0, mediaSize, mediaSize)
+      ctx.fillStyle = '#666666'
+      ctx.font = '20px Arial'
+      ctx.textAlign = 'center'
+      ctx.fillText('媒体加载失败', mediaSize/2, mediaSize/2)
+      return canvas
+    }
+  }
 
-      let croppedImage
-
-      if (imageMetadata.format === 'webp') {
-        const jimpImage = await Jimp.read(sharpPng)
-
-        croppedImage = await jimpImage.autocrop().getBuffer(JimpMime.png)
-      } else {
-        const smartcropResult = await smartcrop.crop(sharpPng, { width: mediaSize, height: imageMetadata.height })
-        const crop = smartcropResult.topCrop
-
-        croppedImage = imageSharp.extract({ width: crop.width, height: crop.height, left: crop.x, top: crop.y })
-        croppedImage = await imageSharp.png({ lossless: true, force: true }).toBuffer()
+  async processAnimatedMedia (mediaUrl, mediaSize, crop = true) {
+    try {
+      console.log('处理动态媒体以保持动态特性:', mediaUrl)
+      
+      // 对于动态媒体，我们返回一个特殊的对象，包含原始URL和尺寸信息
+      // 而不是提取静态帧
+      const tempDir = path.join(__dirname, '../temp')
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true })
       }
 
-      return loadImage(croppedImage)
-    } else {
-      return loadImage(load)
+      const timestamp = Date.now()
+      const inputFile = path.join(tempDir, `input_${timestamp}.webm`)
+
+      // 下载文件到本地
+      const mediaBuffer = await loadImageFromUrl(mediaUrl)
+      fs.writeFileSync(inputFile, mediaBuffer)
+
+      // 使用FFmpeg获取视频信息
+      return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(inputFile, (err, metadata) => {
+          if (err) {
+            console.error('FFprobe错误:', err)
+            // 如果无法获取metadata，使用默认值
+            resolve({
+              isAnimated: true,
+              width: mediaSize,
+              height: mediaSize,
+              localPath: inputFile,
+              originalUrl: mediaUrl,
+              duration: 3000, // 默认3秒
+              fps: 30
+            })
+          } else {
+            const videoStream = metadata.streams.find(stream => stream.codec_type === 'video')
+            const duration = parseFloat(metadata.format.duration) * 1000 || 3000 // 转换为毫秒
+            
+            resolve({
+              isAnimated: true,
+              width: videoStream ? videoStream.width : mediaSize,
+              height: videoStream ? videoStream.height : mediaSize,
+              localPath: inputFile,
+              originalUrl: mediaUrl,
+              duration: duration,
+              fps: videoStream ? (videoStream.r_frame_rate ? eval(videoStream.r_frame_rate) : 30) : 30
+            })
+          }
+        })
+      })
+    } catch (error) {
+      console.error('动态媒体处理错误:', error)
+      
+      // 如果处理失败，返回占位符动态对象
+      return {
+        isAnimated: true,
+        width: mediaSize,
+        height: mediaSize,
+        localPath: null,
+        originalUrl: mediaUrl,
+        duration: 3000,
+        fps: 30,
+        error: true
+      }
     }
   }
 
@@ -416,7 +533,7 @@ class QuoteGenerate {
 
     let textWidth = 0
 
-    // load custom emoji
+    // load custom emoji - 只有在有Telegram实例时才加载
     const customEmojiIds = []
 
     for (let index = 0; index < styledWords.length; index++) {
@@ -427,15 +544,18 @@ class QuoteGenerate {
       }
     }
 
-    const getCustomEmojiStickers = await this.telegram.callApi('getCustomEmojiStickers', {
-      custom_emoji_ids: customEmojiIds
-    }).catch(() => {})
+    let getCustomEmojiStickers
+    if (this.telegram && customEmojiIds.length > 0) {
+      getCustomEmojiStickers = await this.telegram.callApi('getCustomEmojiStickers', {
+        custom_emoji_ids: customEmojiIds
+      }).catch(() => {})
+    }
 
     const customEmojiStickers = {}
 
     const loadCustomEmojiStickerPromises = []
 
-    if (getCustomEmojiStickers) {
+    if (getCustomEmojiStickers && this.telegram) {
       for (let index = 0; index < getCustomEmojiStickers.length; index++) {
         const sticker = getCustomEmojiStickers[index]
 
@@ -481,7 +601,7 @@ class QuoteGenerate {
       }
 
       let fontType = ''
-      let fontName = 'NotoSans'
+      let fontName = 'Arial' // 使用Arial作为备用字体
       let fillStyle = fontColor
 
       if (styledWord.style.includes('bold')) {
@@ -491,7 +611,7 @@ class QuoteGenerate {
         fontType += 'italic '
       }
       if (styledWord.style.includes('monospace')) {
-        fontName = 'NotoSansMono'
+        fontName = 'monospace'
         fillStyle = '#5887a7'
       }
       if (styledWord.style.includes('mention')) {
@@ -501,10 +621,6 @@ class QuoteGenerate {
         const rbaColor = this.hexToRgb(this.normalizeColor(fontColor))
         fillStyle = `rgba(${rbaColor[0]}, ${rbaColor[1]}, ${rbaColor[2]}, 0.15)`
       }
-      // else {
-      //   canvasCtx.font = `${fontSize}px OpenSans`
-      //   canvasCtx.fillStyle = fontColor
-      // }
 
       canvasCtx.font = `${fontType} ${fontSize}px ${fontName}`
       canvasCtx.fillStyle = fillStyle
@@ -653,106 +769,43 @@ class QuoteGenerate {
   }
 
   roundImage (image, r) {
+    // 检查输入是否为有效的Image或Canvas
+    if (!image || (!image.width && !image.height)) {
+      console.error('roundImage: 无效的图片对象')
+      // 返回一个默认的圆形图片
+      const size = r * 2 || 100
+      const canvas = createCanvas(size, size)
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = '#cccccc'
+      ctx.beginPath()
+      ctx.arc(size/2, size/2, size/2, 0, 2 * Math.PI)
+      ctx.fill()
+      return canvas
+    }
+
     const w = image.width
     const h = image.height
 
-    const canvas = createCanvas(w, h)
+    // 创建正方形画布以确保圆形效果
+    const size = Math.min(w, h)
+    const canvas = createCanvas(size, size)
     const canvasCtx = canvas.getContext('2d')
 
-    const x = 0
-    const y = 0
-
-    if (w < 2 * r) r = w / 2
-    if (h < 2 * r) r = h / 2
+    // 创建圆形剪切路径
     canvasCtx.beginPath()
-    canvasCtx.moveTo(x + r, y)
-    canvasCtx.arcTo(x + w, y, x + w, y + h, r)
-    canvasCtx.arcTo(x + w, y + h, x, y + h, r)
-    canvasCtx.arcTo(x, y + h, x, y, r)
-    canvasCtx.arcTo(x, y, x + w, y, r)
-    canvasCtx.save()
-    canvasCtx.clip()
+    canvasCtx.arc(size/2, size/2, size/2, 0, 2 * Math.PI)
     canvasCtx.closePath()
-    canvasCtx.drawImage(image, x, y)
-    canvasCtx.restore()
+    canvasCtx.clip()
+
+    // 居中绘制图片
+    const offsetX = (size - w) / 2
+    const offsetY = (size - h) / 2
+    canvasCtx.drawImage(image, offsetX, offsetY, w, h)
 
     return canvas
   }
 
-  drawReplyLine (lineWidth, height, color) {
-    const canvas = createCanvas(20, height)
-    const context = canvas.getContext('2d')
-    context.beginPath()
-    context.moveTo(10, 0)
-    context.lineTo(10, height)
-    context.lineWidth = lineWidth
-    context.strokeStyle = color
-    context.stroke()
-    context.closePath()
-
-    return canvas
-  }
-
-  async drawAvatar (user) {
-    const avatarImage = await this.downloadAvatarImage(user).catch(() => {})
-
-    if (avatarImage) {
-      const avatarSize = avatarImage.naturalHeight
-
-      const canvas = createCanvas(avatarSize, avatarSize)
-      const canvasCtx = canvas.getContext('2d')
-
-      const avatarX = 0
-      const avatarY = 0
-
-      canvasCtx.beginPath()
-      canvasCtx.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2, true)
-      canvasCtx.clip()
-      canvasCtx.closePath()
-      canvasCtx.restore()
-      canvasCtx.drawImage(avatarImage, avatarX, avatarY, avatarSize, avatarSize)
-
-      return canvas
-    }
-  }
-
-  drawLineSegment (ctx, x, y, width, isEven) {
-    ctx.lineWidth = 35 // how thick the line is
-    ctx.strokeStyle = '#aec6cf' // what color our line is
-    ctx.beginPath()
-    y = isEven ? y : -y
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, y)
-    ctx.arc(x + width / 2, y, width / 2, Math.PI, 0, isEven)
-    ctx.lineTo(x + width, 0)
-    ctx.stroke()
-  }
-
-  drawWaveform (data) {
-    const normalizedData = data.map(i => i / 32)
-
-    const canvas = createCanvas(4500, 500)
-    const padding = 50
-    canvas.height = (canvas.height + padding * 2)
-    const ctx = canvas.getContext('2d')
-    ctx.translate(0, canvas.height / 2 + padding)
-
-    // draw the line segments
-    const width = canvas.width / normalizedData.length
-    for (let i = 0; i < normalizedData.length; i++) {
-      const x = width * i
-      let height = normalizedData[i] * canvas.height - padding
-      if (height < 0) {
-        height = 0
-      } else if (height > canvas.height / 2) {
-        height = height > canvas.height / 2
-      }
-      this.drawLineSegment(ctx, x, height, width, (i + 1) % 2)
-    }
-    return canvas
-  }
-
-  async drawQuote (scale = 1, backgroundColorOne, backgroundColorTwo, avatar, replyName, replyNameColor, replyText, name, text, media, mediaType, maxMediaSize) {
+  async drawQuote (scale = 1, backgroundColorOne, backgroundColorTwo, avatar, replyName, replyNameColor, replyText, name, text, media, mediaType, maxMediaSize, isAnimated = false) {
     const avatarPosX = 0 * scale
     const avatarPosY = 5 * scale
     const avatarSize = 50 * scale
@@ -762,10 +815,12 @@ class QuoteGenerate {
 
     const indent = 14 * scale
 
-    if (mediaType === 'sticker') name = undefined
+    // 宽度保持不变
+    let minWidth = 112 * scale
+    let minHeight = 61 * scale // 从82再减少到61 (再减少25%)
 
-    let width = 0
-    if (name) width = name.width
+    let width = minWidth
+    if (name) width = Math.max(width, name.width + indent * 2)
     if (text && width < text.width + indent) width = text.width + indent
     if (name && width < name.width + indent) width = name.width + indent
     if (replyName) {
@@ -773,12 +828,12 @@ class QuoteGenerate {
       if (replyText && width < replyText.width) width = replyText.width + indent * 2
     }
 
-    let height = indent
+    let height = Math.max(minHeight, indent)
     if (text) height += text.height
     else height += indent
 
     if (name) {
-      height = name.height
+      height = Math.max(name.height, minHeight)
       if (text) height = text.height + name.height
       else height += indent
     }
@@ -824,42 +879,89 @@ class QuoteGenerate {
     let mediaWidth, mediaHeight
 
     if (media) {
-      mediaWidth = media.width * (maxMediaSize / media.height)
-      mediaHeight = maxMediaSize
+      if (media.isAnimated || isAnimated) {
+        // 动态媒体尺寸保持不变
+        const baseMediaSize = Math.max(maxMediaSize, 169 * scale)
+        mediaWidth = media.width || baseMediaSize
+        mediaHeight = media.height || baseMediaSize
+        
+        if (mediaWidth > baseMediaSize || mediaHeight > baseMediaSize) {
+          const scaleRatio = Math.min(baseMediaSize / mediaWidth, baseMediaSize / mediaHeight)
+          mediaWidth *= scaleRatio
+          mediaHeight *= scaleRatio
+        }
+        
+        mediaWidth = Math.max(mediaWidth, 112 * scale)
+        mediaHeight = Math.max(mediaHeight, 150 * scale)
+      } else {
+        mediaWidth = media.width * (maxMediaSize / media.height)
+        mediaHeight = maxMediaSize
 
-      if (mediaWidth >= maxMediaSize) {
-        mediaWidth = maxMediaSize
-        mediaHeight = media.height * (maxMediaSize / media.width)
+        if (mediaWidth >= maxMediaSize) {
+          mediaWidth = maxMediaSize
+          mediaHeight = media.height * (maxMediaSize / media.width)
+        }
       }
 
-      if (!text || text.width <= mediaWidth || mediaWidth > (width - blockPosX)) {
-        width = mediaWidth + indent * 6
+      const mediaRequiredWidth = mediaWidth + blockPosX + indent * 1.69
+      if (width < mediaRequiredWidth) {
+        width = mediaRequiredWidth
       }
 
-      height += mediaHeight
-      if (!text) height += indent
+      height += mediaHeight + indent * 0.42 // 从0.56再减少到0.42 (再减少25%)
 
       if (name) {
         mediaPosX = namePosX
-        mediaPosY = name.height + 5 * scale
+        mediaPosY = name.height + 4.5 * scale // 从6减少到4.5 (再减少25%)
       } else {
         mediaPosX = blockPosX + indent
-        mediaPosY = indent
+        mediaPosY = indent * 0.84 // 从1.12减少到0.84 (再减少25%)
       }
       if (replyName) mediaPosY += replyNamePosY + indent / 2
-      textPosY = mediaPosY + mediaHeight + 5 * scale
+      textPosY = mediaPosY + mediaHeight + 4.5 * scale // 从6减少到4.5 (再减少25%)
     }
 
-    // Declare rectWidth and rectHeight variables before using them
+    // 对话框尺寸调整
     let rectWidth = width - blockPosX
     let rectHeight = height
 
-    if (mediaType === 'sticker' && (name || replyName)) {
-      rectHeight = replyName && replyText ? (replyName.height + replyText.height * 0.5) + indent * 2 : indent * 2
-      backgroundColorOne = backgroundColorTwo = 'rgba(0, 0, 0, 0.5)'
+    // 宽度保持不变，只缩短高度
+    rectWidth = Math.max(rectWidth, 142 * scale) // 宽度保持不变
+    rectHeight = Math.max(rectHeight, 76 * scale) // 从101减少到76 (再减少25%)
+
+    // 如果是动态媒体，适度增加对话框尺寸
+    if (media && (media.isAnimated || isAnimated)) {
+      rectWidth = Math.max(rectWidth, mediaWidth + indent * 1.12) // 宽度保持不变
+      rectHeight = Math.max(rectHeight, mediaHeight + (name ? name.height : 0) + indent * 1.27) // 从1.69减少到1.27 (再减少25%)
     }
 
-    const canvas = createCanvas(width, height)
+    // 修改sticker的背景逻辑，确保总是显示对话框
+    let useBackgroundRect = true
+    if (mediaType === 'sticker' && !name && !replyName && !text) {
+      // 只有在纯sticker（无名字、无回复、无文字）时才不显示背景
+      useBackgroundRect = false
+    }
+
+    if (mediaType === 'sticker' && (name || replyName || media.isAnimated)) {
+      if (replyName && replyText) {
+        rectHeight = Math.max(rectHeight, (replyName.height + replyText.height * 0.5) + indent * 0.84) // 从1.12减少到0.84 (再减少25%)
+      } else if (name) {
+        rectHeight = Math.max(rectHeight, name.height + indent * 0.84) // 从1.12减少到0.84 (再减少25%)
+      }
+      
+      // 对于动态sticker，使用更明显的背景
+      if (media && media.isAnimated) {
+        backgroundColorOne = backgroundColorTwo = 'rgba(30, 30, 30, 0.9)'
+      } else {
+        backgroundColorOne = backgroundColorTwo = 'rgba(50, 50, 50, 0.8)'
+      }
+    }
+
+    // 重新计算canvas尺寸以适应调整后的对话框
+    const finalWidth = Math.max(width, rectWidth + blockPosX)
+    const finalHeight = Math.max(height, rectHeight + blockPosY)
+
+    const canvas = createCanvas(finalWidth, finalHeight)
     const canvasCtx = canvas.getContext('2d')
 
     const rectPosX = blockPosX
@@ -867,12 +969,9 @@ class QuoteGenerate {
     const rectRoundRadius = 25 * scale
 
     let rect
-    if (mediaType === 'sticker' && (name || replyName)) {
-      rectHeight = (replyName.height + replyText.height * 0.5) + indent * 2
-      backgroundColorOne = backgroundColorTwo = 'rgba(0, 0, 0, 0.5)'
-    }
-
-    if (mediaType !== 'sticker' || name || replyName) {
+    
+    // 确保语录框总是被绘制
+    if (useBackgroundRect) {
       if (backgroundColorOne === backgroundColorTwo) {
         rect = this.drawRoundRect(backgroundColorOne, rectWidth, rectHeight, rectRoundRadius)
       } else {
@@ -880,11 +979,44 @@ class QuoteGenerate {
       }
     }
 
-    if (avatar) canvasCtx.drawImage(avatar, avatarPosX, avatarPosY, avatarSize, avatarSize)
+    // 绘制头像（确保为圆形）
+    if (avatar) {
+      const roundAvatar = this.roundImage(avatar, avatarSize / 2)
+      canvasCtx.drawImage(roundAvatar, avatarPosX, avatarPosY, avatarSize, avatarSize)
+    }
+    
+    // 绘制语录框
     if (rect) canvasCtx.drawImage(rect, rectPosX, rectPosY)
+    
+    // 绘制用户名
     if (name) canvasCtx.drawImage(name, namePosX, namePosY)
+    
+    // 绘制文字
     if (text) canvasCtx.drawImage(text, textPosX, textPosY)
-    if (media) canvasCtx.drawImage(this.roundImage(media, 5 * scale), mediaPosX, mediaPosY, mediaWidth, mediaHeight)
+    
+    // 处理媒体绘制
+    if (media) {
+      try {
+        if (media.isAnimated && media.localPath) {
+          // 对于动态媒体，我们在静态层中完全跳过媒体绘制
+          // 动态内容将在视频合成阶段单独处理
+          console.log('为动态媒体预留空间:', `${mediaWidth}x${mediaHeight} at (${mediaPosX}, ${mediaPosY})`)
+          
+          // 可选：绘制一个调试边框来显示媒体位置
+          // canvasCtx.strokeStyle = 'rgba(255, 0, 0, 0.3)'
+          // canvasCtx.lineWidth = 2
+          // canvasCtx.strokeRect(mediaPosX, mediaPosY, mediaWidth, mediaHeight)
+          
+        } else if (media.width && media.height) {
+          // 常规图片/Canvas对象
+          canvasCtx.drawImage(this.roundImage(media, 5 * scale), mediaPosX, mediaPosY, mediaWidth, mediaHeight)
+        } else {
+          console.error('媒体对象无效，跳过绘制')
+        }
+      } catch (error) {
+        console.error('绘制媒体时出错:', error)
+      }
+    }
 
     if (replyName && replyText) {
       canvasCtx.drawImage(this.drawReplyLine(3 * scale, replyName.height + replyText.height * 0.4, replyNameColor), textPosX - 3, replyNamePosY)
@@ -893,39 +1025,58 @@ class QuoteGenerate {
       canvasCtx.drawImage(replyText, replyPosX, replyTextPosY)
     }
 
+    // 返回包含动态媒体信息和位置信信息的结果
+    return {
+      canvas,
+      animatedMedia: media && media.isAnimated ? {
+        ...media,
+        mediaPosX,
+        mediaPosY,
+        mediaWidth,
+        mediaHeight
+      } : null
+    }
+  }
+
+  drawReplyLine (width, height, color) {
+    const canvas = createCanvas(width, height)
+    const canvasCtx = canvas.getContext('2d')
+
+    canvasCtx.fillStyle = color
+    canvasCtx.fillRect(0, 0, width, height)
+
     return canvas
   }
 
   normalizeColor (color) {
-    const canvas = createCanvas(0, 0)
-    const canvasCtx = canvas.getContext('2d')
-
-    canvasCtx.fillStyle = color
-    color = canvasCtx.fillStyle
-
+    if (color.startsWith('rgba')) {
+      return color.replace(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/, '#$1$2$3')
+        .replace(/(\d+)/g, (match) => parseInt(match).toString(16).padStart(2, '0'))
+    }
     return color
   }
 
-  getLineDirection (words, start_index) {
-    const RTLMatch = /[\u0591-\u07FF\u200F\u202B\u202E\uFB1D-\uFDFD\uFE70-\uFEFC]/
-    const neutralMatch = /[\u0000-\u0040\u005B-\u0060\u007B-\u00BF\u00D7\u00F7\u02B9-\u02FF\u2000-\u2BFF\u2010-\u2029\u202C\u202F-\u2BFF\u1F300-\u1F5FF\u1F600-\u1F64F]/
-
-    for (let index = start_index; index < words.length; index++) {
-      if (words[index].word.match(RTLMatch)) {
+  getLineDirection (styledWords, startIndex) {
+    // 检测文本方向 (LTR/RTL)
+    const rtlChars = /[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/
+    
+    for (let i = startIndex; i < Math.min(startIndex + 10, styledWords.length); i++) {
+      if (styledWords[i] && styledWords[i].word && rtlChars.test(styledWords[i].word)) {
         return 'rtl'
-      } else {
-        if (!words[index].word.match(neutralMatch))
-          return 'ltr'
       }
     }
     return 'ltr'
   }
 
+  async drawAvatar (user) {
+    return await this.downloadAvatarImage(user)
+  }
+
   async generate (backgroundColorOne, backgroundColorTwo, message, width = 512, height = 512, scale = 2, emojiBrand = 'apple') {
     if (!scale) scale = 2
     if (scale > 20) scale = 20
-    width = width || 512  // Ensure width has a default value
-    height = height || 512 // Ensure height has a default value
+    width = width || 512
+    height = height || 512
     width *= scale
     height *= scale
 
@@ -1096,7 +1247,7 @@ class QuoteGenerate {
       }
     }
 
-    let mediaCanvas, mediaType, maxMediaSize
+    let mediaCanvas, mediaType, maxMediaSize, isAnimated = false
     if (message.media) {
       let media, type
 
@@ -1114,34 +1265,60 @@ class QuoteGenerate {
         } else media = message.media[0]
       }
 
-      maxMediaSize = width / 3 * scale
-      if (message.text && maxMediaSize < textCanvas.width) maxMediaSize = textCanvas.width
+      // 进一步减少动态媒体的最大尺寸 - 减少1/4宽度
+      maxMediaSize = Math.max(width / 3 * scale, 225 * scale) // 从300减少到225 (减少25%)
+      if (message.text && textCanvas && maxMediaSize < textCanvas.width) maxMediaSize = textCanvas.width
 
-      if (media.is_animated) {
-        media = media.thumb
-        maxMediaSize = maxMediaSize / 2
+      // 检查是否为动态媒体
+      isAnimated = media.is_animated || 
+                   (typeof media === 'string' && (media.match(/\.webm/i) || media.match(/\.gif/i))) ||
+                   (media.url && (media.url.match(/\.webm/i) || media.url.match(/\.gif/i)))
+
+      if (isAnimated) {
+        // 对于动态媒体，我们需要特殊处理
+        try {
+          const animatedMediaInfo = await this.processAnimatedMedia(media, maxMediaSize, crop)
+          mediaCanvas = animatedMediaInfo // 保存动态媒体信息
+        } catch (error) {
+          console.error('处理动态媒体失败:', error)
+          // 使用占位符
+          const canvas = createCanvas(maxMediaSize, maxMediaSize)
+          const ctx = canvas.getContext('2d')
+          ctx.fillStyle = '#4a90e2'
+          ctx.fillRect(0, 0, maxMediaSize, maxMediaSize)
+          ctx.fillStyle = '#ffffff'
+          ctx.font = '20px Arial'
+          ctx.textAlign = 'center'
+          ctx.fillText('🎬', maxMediaSize/2, maxMediaSize/2 - 10)
+          ctx.font = '14px Arial'
+          ctx.fillText('动态内容', maxMediaSize/2, maxMediaSize/2 + 15)
+          mediaCanvas = canvas
+        }
+      } else {
+        if (media.is_animated) {
+          media = media.thumb
+          maxMediaSize = maxMediaSize / 2
+        }
+        mediaCanvas = await this.downloadMediaImage(media, maxMediaSize, type, crop)
       }
-
-      mediaCanvas = await this.downloadMediaImage(media, maxMediaSize, type, crop)
       mediaType = message.mediaType
     }
 
-    if (message.voice) {
-      mediaCanvas = this.drawWaveform(message.voice.waveform)
-      maxMediaSize = width / 3 * scale
-    }
-
-    const quote = this.drawQuote(
+    const quote = await this.drawQuote(
       scale,
       backgroundColorOne, backgroundColorTwo,
       avatarCanvas,
       replyName, replyNameColor, replyText,
       nameCanvas, textCanvas,
-      mediaCanvas, mediaType, maxMediaSize
+      mediaCanvas, mediaType, maxMediaSize, isAnimated
     )
 
-    return quote
+    return {
+      ...quote,
+      isAnimated: isAnimated && mediaCanvas && mediaCanvas.isAnimated
+    }
   }
 }
 
 module.exports = QuoteGenerate
+

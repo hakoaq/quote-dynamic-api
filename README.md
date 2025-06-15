@@ -474,3 +474,20 @@ def complete_example():
 simple_example()
 complete_example()
 ```
+
+### 动态媒体支持
+
+API现在支持处理动态媒体（WebM、GIF等）并生成动态语录：
+
+```http
+POST /generate.webm
+Content-Type: application/json
+
+{
+  "messages": [{
+    "from": {
+      "id": 1,
+      "name": "User"
+    },
+    "text": "看这个动画！",
+    "media

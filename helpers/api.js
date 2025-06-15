@@ -20,9 +20,13 @@ module.exports = async (ctx, next) => {
         if (ctx.result.ext) {
           if (ctx.result.ext === 'webp') ctx.response.set('content-type', 'image/webp')
           if (ctx.result.ext === 'png') ctx.response.set('content-type', 'image/png')
+          if (ctx.result.ext === 'webm') ctx.response.set('content-type', 'video/webm')
           ctx.response.set('quote-type', ctx.result.type)
           ctx.response.set('quote-width', ctx.result.width)
           ctx.response.set('quote-height', ctx.result.height)
+          if (ctx.result.isAnimated) {
+            ctx.response.set('quote-animated', 'true')
+          }
           ctx.body = ctx.result.image
         } else {
           ctx.body = {
