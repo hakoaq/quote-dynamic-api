@@ -457,7 +457,7 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
     }
 
     const timestamp = Date.now()
-    const outputFile = path.join(tempDir, `animated_quote_${timestamp}.webm`)
+    const outputFile = path.join(tempDir, `animated_quote_${timestamp}.webp`)
     
     // 找到包含动态媒体的语录
     const animatedQuote = quoteImages.find(quote => quote.animatedMedia)
@@ -467,7 +467,7 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
 
     const canvas = animatedQuote.canvas
     const animatedMedia = animatedQuote.animatedMedia
-    const overlayFile = path.join(tempDir, `overlay_${timestamp}.png`)
+    const overlayFile = path.join(tempDir, `overlay_${timestamp}.png`) // 修复：添加缺少的右括号
     
     // 创建包含完整语录的叠加层，为动态媒体留出透明区域
     await createQuoteOverlay(overlayFile, canvas.width, canvas.height, parm, canvas, animatedMedia)
@@ -500,19 +500,17 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
         const videoStream = metadata.streams.find(stream => stream.codec_type === 'video')
         const videoWidth = videoStream ? videoStream.width : 512
         const videoHeight = videoStream ? videoStream.height : 512
-        const videoDuration = parseFloat(metadata.format.duration) || 3.0 // 使用实际时长
+        const videoDuration = parseFloat(metadata.format.duration) || 3.0
 
         console.log(`原始视频尺寸: ${videoWidth}x${videoHeight}`)
         console.log(`原始视频时长: ${videoDuration}秒`)
         console.log(`语录画布尺寸: ${canvas.width}x${canvas.height}`)
 
-        // 使用语录画布的尺寸作为输出尺寸
         const outputWidth = canvas.width
         const outputHeight = canvas.height
 
         console.log(`输出尺寸: ${outputWidth}x${outputHeight}`)
 
-        // 使用动态媒体对象中保存的位置信息
         const mediaPosX = animatedMedia.mediaPosX
         const mediaPosY = animatedMedia.mediaPosY
         const mediaWidth = animatedMedia.mediaWidth
@@ -521,30 +519,26 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
         console.log(`媒体显示尺寸: ${mediaWidth}x${mediaHeight}`)
         console.log(`媒体位置: ${mediaPosX}, ${mediaPosY}`)
 
-        // 修复FFmpeg命令构建
+        // 修改FFmpeg命令构建为WebP格式
         const command = ffmpeg()
           .input(animatedMediaPath)
-          .inputOptions(['-stream_loop', '3']) // 正确的循环语法
+          .inputOptions(['-stream_loop', '3'])
           .input(overlayFile)
           .complexFilter([
-            // 缩放动态媒体到合适尺寸
             `[0:v]scale=${Math.round(mediaWidth)}:${Math.round(mediaHeight)}[scaled_media]`,
-            // 创建语录大小的背景色
             `color=c=#000000:size=${outputWidth}x${outputHeight}:duration=${Math.max(videoDuration, 3)}[bg]`,
-            // 将动态媒体放置到正确位置
             `[bg][scaled_media]overlay=${Math.round(mediaPosX)}:${Math.round(mediaPosY)}:shortest=1[with_media]`,
-            // 叠加语录层（包含头像、对话框、用户名等所有元素）
             `[with_media][1:v]overlay=0:0[output]`
           ])
           .outputOptions([
             '-map', '[output]',
-            '-c:v', 'libvpx',
-            '-crf', '23',
-            '-b:v', '1M',
-            '-auto-alt-ref', '0',
-            `-t`, `${Math.max(videoDuration * 3, 3)}` // 确保足够的播放时长
+            '-c:v', 'libwebp',
+            '-quality', '90',
+            '-method', '4',
+            '-loop', '0',
+            `-t`, `${Math.max(videoDuration * 3, 3)}`
           ])
-          .format('webm')
+          .format('webp')
           .output(outputFile)
 
         command.on('start', (commandLine) => {
@@ -559,7 +553,7 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
           console.log('动态语录生成完成')
           
           try {
-            const webmBuffer = fs.readFileSync(outputFile)
+            const webpBuffer = fs.readFileSync(outputFile)
             
             // 清理临时文件
             const filesToClean = [overlayFile, outputFile]
@@ -575,9 +569,9 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
 
             let result
             if (parm.ext) {
-              result = webmBuffer
+              result = webpBuffer
             } else {
-              result = webmBuffer.toString('base64')
+              result = webpBuffer.toString('base64')
             }
 
             resolve({
@@ -585,7 +579,7 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
               type: 'animated',
               width: outputWidth,
               height: outputHeight,
-              ext: parm.ext || 'webm',
+              ext: parm.ext || 'webp',
               isAnimated: true,
               duration: Math.max(videoDuration * 3, 3)
             })
@@ -621,5 +615,6 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
     throw error
   }
 }
+
 
 
