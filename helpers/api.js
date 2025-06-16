@@ -76,11 +76,20 @@ module.exports = async (ctx, next) => {
           console.log(`✅ 返回二进制文件: ${ctx.result.ext}, 大小: ${ctx.result.image ? ctx.result.image.length : 0} bytes`)
           ctx.body = ctx.result.image
         } else {
-          console.log(`✅ 返回JSON结果`)
-          ctx.body = {
+          // 对于静态语录，保持JSON格式但确保字段完整
+          const jsonResult = {
             ok: true,
-            result: ctx.result
+            result: {
+              image: ctx.result.image,
+              type: ctx.result.type || 'quote',
+              width: ctx.result.width || 512,
+              height: ctx.result.height || 512,
+              ext: ctx.result.ext || 'webp'
+            }
           }
+          
+          console.log(`✅ 返回JSON结果，图片数据长度: ${ctx.result.image ? ctx.result.image.length : 0}`)
+          ctx.body = jsonResult
         }
       }
     }
