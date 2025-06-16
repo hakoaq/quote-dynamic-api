@@ -457,7 +457,7 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
     }
 
     const timestamp = Date.now()
-    const outputFile = path.join(tempDir, `animated_quote_${timestamp}.webp`) // 确保是webp格式
+    const outputFile = path.join(tempDir, `animated_quote_${timestamp}.webm`)
     
     // 找到包含动态媒体的语录
     const animatedQuote = quoteImages.find(quote => quote.animatedMedia)
@@ -500,45 +500,88 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
         const videoStream = metadata.streams.find(stream => stream.codec_type === 'video')
         const videoWidth = videoStream ? videoStream.width : 512
         const videoHeight = videoStream ? videoStream.height : 512
-        const videoDuration = parseFloat(metadata.format.duration) || 3.0
+        const videoDuration = Math.min(parseFloat(metadata.format.duration) || 3.0, 3.0)
 
         console.log(`原始视频尺寸: ${videoWidth}x${videoHeight}`)
         console.log(`原始视频时长: ${videoDuration}秒`)
-        console.log(`语录画布尺寸: ${canvas.width}x${canvas.height}`)
 
-        const outputWidth = canvas.width
-        const outputHeight = canvas.height
+        // 使用语录canvas的实际尺寸作为基础
+        let outputWidth = canvas.width
+        let outputHeight = canvas.height
+
+        // 确保符合Telegram要求：一边必须是512像素
+        if (outputWidth !== 512 && outputHeight !== 512) {
+          if (outputWidth >= outputHeight) {
+            const ratio = 512 / outputWidth
+            outputWidth = 512
+            outputHeight = Math.min(Math.round(outputHeight * ratio), 512)
+          } else {
+            const ratio = 512 / outputHeight
+            outputHeight = 512
+            outputWidth = Math.min(Math.round(outputWidth * ratio), 512)
+          }
+        }
 
         console.log(`输出尺寸: ${outputWidth}x${outputHeight}`)
 
-        const mediaPosX = animatedMedia.mediaPosX
-        const mediaPosY = animatedMedia.mediaPosY
-        const mediaWidth = animatedMedia.mediaWidth
-        const mediaHeight = animatedMedia.mediaHeight
+        // 计算媒体在最终输出中的位置和尺寸
+        const scaleX = outputWidth / canvas.width
+        const scaleY = outputHeight / canvas.height
+        const scaledMediaPosX = Math.round(animatedMedia.mediaPosX * scaleX)
+        const scaledMediaPosY = Math.round(animatedMedia.mediaPosY * scaleY)
+        const scaledMediaWidth = Math.round(animatedMedia.mediaWidth * scaleX)
+        const scaledMediaHeight = Math.round(animatedMedia.mediaHeight * scaleY)
 
-        console.log(`媒体显示尺寸: ${mediaWidth}x${mediaHeight}`)
-        console.log(`媒体位置: ${mediaPosX}, ${mediaPosY}`)
+        console.log(`缩放后媒体信息:`)
+        console.log(`  位置: (${scaledMediaPosX}, ${scaledMediaPosY})`)
+        console.log(`  尺寸: ${scaledMediaWidth}x${scaledMediaHeight}`)
+        console.log(`  缩放比例: X=${scaleX.toFixed(3)}, Y=${scaleY.toFixed(3)}`)
 
-        // 修正FFmpeg命令以生成WebP格式
+        // 限制最大时长为3秒
+        const maxDuration = 3.0
+        const actualDuration = Math.min(videoDuration, maxDuration)
+        
+        // 限制帧率为30fps
+        const targetFPS = Math.min(30, videoStream ? (videoStream.r_frame_rate ? eval(videoStream.r_frame_rate) : 30) : 30)
+
+        // 构建优化的FFmpeg命令
         const command = ffmpeg()
           .input(animatedMediaPath)
-          .inputOptions(['-stream_loop', '3'])
+          .inputOptions([
+            '-stream_loop', '2',
+            '-t', actualDuration.toString()
+          ])
           .input(overlayFile)
           .complexFilter([
-            `[0:v]scale=${Math.round(mediaWidth)}:${Math.round(mediaHeight)}[scaled_media]`,
-            `color=c=#000000:size=${outputWidth}x${outputHeight}:duration=${Math.max(videoDuration, 3)}[bg]`,
-            `[bg][scaled_media]overlay=${Math.round(mediaPosX)}:${Math.round(mediaPosY)}:shortest=1[with_media]`,
-            `[with_media][1:v]overlay=0:0[output]`
+            // 精确缩放动态媒体到计算出的尺寸
+            `[0:v]scale=${scaledMediaWidth}:${scaledMediaHeight}:flags=lanczos[scaled_media]`,
+            // 创建精确尺寸的背景
+            `color=c=#000000:size=${outputWidth}x${outputHeight}:duration=${actualDuration}[bg]`,
+            // 精确定位动态媒体
+            `[bg][scaled_media]overlay=${scaledMediaPosX}:${scaledMediaPosY}:shortest=1[with_media]`,
+            // 缩放叠加层到输出尺寸
+            `[1:v]scale=${outputWidth}:${outputHeight}:flags=lanczos[scaled_overlay]`,
+            // 叠加语录层
+            `[with_media][scaled_overlay]overlay=0:0[output]`
           ])
           .outputOptions([
             '-map', '[output]',
-            '-c:v', 'libwebp',    // 使用WebP编码器
-            '-quality', '90',     // WebP质量
-            '-method', '4',       // WebP压缩方法
-            '-loop', '0',         // 无限循环
-            `-t`, `${Math.max(videoDuration * 3, 3)}` // 确保足够的播放时长
+            '-c:v', 'libvpx-vp9',
+            '-pix_fmt', 'yuva420p',
+            '-crf', '35', // 稍微降低CRF以提高质量
+            '-b:v', '250k', // 适度提高比特率
+            '-maxrate', '500k',
+            '-bufsize', '1000k',
+            '-r', targetFPS.toString(),
+            '-t', actualDuration.toString(),
+            '-an',
+            '-deadline', 'good',
+            '-cpu-used', '1', // 提高编码质量
+            '-row-mt', '1',
+            '-threads', '4',
+            '-loop', '0'
           ])
-          .format('webp')         // 明确指定WebP格式
+          .format('webm')
           .output(outputFile)
 
         command.on('start', (commandLine) => {
@@ -553,43 +596,65 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
           console.log('动态语录生成完成')
           
           try {
-            const webpBuffer = fs.readFileSync(outputFile)
+            const webmBuffer = fs.readFileSync(outputFile)
+            const fileSizeKB = webmBuffer.length / 1024
             
-            // 验证生成的文件是否为有效的WebP
-            if (!webpBuffer.slice(0, 4).equals(Buffer.from('RIFF'))) {
-              throw new Error('生成的文件不是有效的WebP格式')
-            }
+            console.log(`生成文件大小: ${fileSizeKB.toFixed(2)} KB`)
             
-            console.log(`生成的WebP文件大小: ${webpBuffer.length} 字节`)
-            
-            // 清理临时文件
-            const filesToClean = [overlayFile, outputFile]
-            if (animatedMediaPath.includes(tempDir)) {
-              filesToClean.push(animatedMediaPath)
-            }
-            
-            filesToClean.forEach(file => {
-              if (fs.existsSync(file)) {
-                try { fs.unlinkSync(file) } catch (e) { console.error('清理文件失败:', e) }
-              }
-            })
-
-            let result
-            if (parm.ext) {
-              result = webpBuffer
+            // 检查文件大小是否超过256KB限制
+            if (fileSizeKB > 256) {
+              console.warn(`⚠️ 文件大小超过256KB限制: ${fileSizeKB.toFixed(2)} KB`)
+              
+              // 尝试重新生成更小的文件
+              const smallerCommand = ffmpeg()
+                .input(animatedMediaPath)
+                .inputOptions(['-stream_loop', '1', '-t', '2']) // 减少时长到2秒
+                .input(overlayFile)
+                .complexFilter([
+                  `[0:v]scale=${scaledMediaWidth}:${scaledMediaHeight}[scaled_media]`,
+                  `color=c=#000000:size=${outputWidth}x${outputHeight}:duration=2[bg]`,
+                  `[bg][scaled_media]overlay=${scaledMediaPosX}:${scaledMediaPosY}:shortest=1[with_media]`,
+                  `[1:v]scale=${outputWidth}:${outputHeight}[scaled_overlay]`,
+                  `[with_media][scaled_overlay]overlay=0:0[output]`
+                ])
+                .outputOptions([
+                  '-map', '[output]',
+                  '-c:v', 'libvpx-vp9',
+                  '-pix_fmt', 'yuva420p',
+                  '-crf', '50', // 进一步提高CRF
+                  '-b:v', '150k', // 进一步降低比特率
+                  '-maxrate', '200k',
+                  '-bufsize', '400k',
+                  '-r', '24', // 降低帧率
+                  '-t', '2',
+                  '-an',
+                  '-deadline', 'good',
+                  '-cpu-used', '4',
+                  '-row-mt', '1',
+                  '-threads', '4',
+                  '-loop', '0'
+                ])
+                .format('webm')
+                .output(outputFile + '_small.webm')
+                .on('end', () => {
+                  const smallWebmBuffer = fs.readFileSync(outputFile + '_small.webm')
+                  const smallFileSizeKB = smallWebmBuffer.length / 1024
+                  console.log(`优化后文件大小: ${smallFileSizeKB.toFixed(2)} KB`)
+                  
+                  // 使用较小的文件
+                  fs.renameSync(outputFile + '_small.webm', outputFile)
+                  
+                  finishProcessing(outputFile, smallWebmBuffer, outputWidth, outputHeight, 2)
+                })
+                .on('error', (err) => {
+                  console.error('优化文件失败，使用原文件:', err)
+                  finishProcessing(outputFile, webmBuffer, outputWidth, outputHeight, actualDuration)
+                })
+                .run()
             } else {
-              result = webpBuffer.toString('base64')
+              finishProcessing(outputFile, webmBuffer, outputWidth, outputHeight, actualDuration)
             }
-
-            resolve({
-              image: result,
-              type: 'animated',
-              width: outputWidth,
-              height: outputHeight,
-              ext: parm.ext || 'webp',
-              isAnimated: true,
-              duration: Math.max(videoDuration * 3, 3)
-            })
+            
           } catch (error) {
             console.error('读取输出文件失败:', error)
             reject(error)
@@ -614,6 +679,40 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
           reject(err)
         })
 
+        function finishProcessing(outputPath, buffer, width, height, duration) {
+          // 清理临时文件
+          const filesToClean = [overlayFile, outputPath]
+          if (animatedMediaPath.includes(tempDir)) {
+            filesToClean.push(animatedMediaPath)
+          }
+          
+          filesToClean.forEach(file => {
+            if (fs.existsSync(file)) {
+              try { fs.unlinkSync(file) } catch (e) { console.error('清理文件失败:', e) }
+            }
+          })
+
+          let result
+          if (parm.ext) {
+            result = buffer
+          } else {
+            result = buffer.toString('base64')
+          }
+
+          resolve({
+            image: result,
+            type: 'animated',
+            width: width,
+            height: height,
+            ext: parm.ext || 'webm',
+            isAnimated: true,
+            duration: duration,
+            fileSize: buffer.length,
+            codec: 'vp9',
+            fps: targetFPS
+          })
+        }
+
         command.run()
       })
     })
@@ -622,6 +721,5 @@ async function generateAnimatedQuote(quoteImages, parm, backgroundColorOne, back
     throw error
   }
 }
-
 
 

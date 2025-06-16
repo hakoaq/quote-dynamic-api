@@ -786,54 +786,6 @@ class QuoteGenerate {
     const w = image.width
     const h = image.height
 
-    // 如果r为0或很小，返回原图不做处理
-    if (r <= 0 || r < 2) {
-      return image
-    }
-
-    // 创建带圆角的画布
-    const canvas = createCanvas(w, h)
-    const canvasCtx = canvas.getContext('2d')
-
-    // 创建圆角矩形剪切路径
-    canvasCtx.beginPath()
-    canvasCtx.moveTo(r, 0)
-    canvasCtx.lineTo(w - r, 0)
-    canvasCtx.quadraticCurveTo(w, 0, w, r)
-    canvasCtx.lineTo(w, h - r)
-    canvasCtx.quadraticCurveTo(w, h, w - r, h)
-    canvasCtx.lineTo(r, h)
-    canvasCtx.quadraticCurveTo(0, h, 0, h - r)
-    canvasCtx.lineTo(0, r)
-    canvasCtx.quadraticCurveTo(0, 0, r, 0)
-    canvasCtx.closePath()
-    canvasCtx.clip()
-
-    // 绘制原图
-    canvasCtx.drawImage(image, 0, 0, w, h)
-
-    return canvas
-  }
-
-  // 新增：专门用于头像的圆形裁剪函数
-  roundAvatar (image, r) {
-    // 检查输入是否为有效的Image或Canvas
-    if (!image || (!image.width && !image.height)) {
-      console.error('roundAvatar: 无效的图片对象')
-      // 返回一个默认的圆形图片
-      const size = r * 2 || 100
-      const canvas = createCanvas(size, size)
-      const ctx = canvas.getContext('2d')
-      ctx.fillStyle = '#cccccc'
-      ctx.beginPath()
-      ctx.arc(size/2, size/2, size/2, 0, 2 * Math.PI)
-      ctx.fill()
-      return canvas
-    }
-
-    const w = image.width
-    const h = image.height
-
     // 创建正方形画布以确保圆形效果
     const size = Math.min(w, h)
     const canvas = createCanvas(size, size)
@@ -863,9 +815,8 @@ class QuoteGenerate {
 
     const indent = 14 * scale
 
-    // 宽度保持不变
     let minWidth = 112 * scale
-    let minHeight = 61 * scale // 从82再减少到61 (再减少25%)
+    let minHeight = 61 * scale
 
     let width = minWidth
     if (name) width = Math.max(width, name.width + indent * 2)
@@ -889,16 +840,20 @@ class QuoteGenerate {
     width += blockPosX + indent
     height += blockPosY
 
+    // 初始化所有位置变量
     let namePosX = blockPosX + indent
     let namePosY = indent
+    let textPosX = blockPosX + indent
+    let textPosY = indent
+    let mediaPosX = 0
+    let mediaPosY = 0
+    let mediaWidth, mediaHeight
 
     if (!name) {
       namePosX = 0
       namePosY = -indent
     }
 
-    const textPosX = blockPosX + indent
-    let textPosY = indent
     if (name) {
       textPosY = name.height + indent * 0.25
       height += indent * 0.25
@@ -921,27 +876,43 @@ class QuoteGenerate {
       height += replyNameHeight + replyTextHeight + (indent / 4)
     }
 
-    let mediaPosX = 0
-    let mediaPosY = 0
-
-    let mediaWidth, mediaHeight
-
     if (media) {
       if (media.isAnimated || isAnimated) {
-        // 动态媒体尺寸保持不变
-        const baseMediaSize = Math.max(maxMediaSize, 169 * scale)
-        mediaWidth = media.width || baseMediaSize
-        mediaHeight = media.height || baseMediaSize
+        // 动态媒体尺寸计算 - 改进版
+        let originalWidth = media.width || 512
+        let originalHeight = media.height || 512
         
-        if (mediaWidth > baseMediaSize || mediaHeight > baseMediaSize) {
-          const scaleRatio = Math.min(baseMediaSize / mediaWidth, baseMediaSize / mediaHeight)
-          mediaWidth *= scaleRatio
-          mediaHeight *= scaleRatio
+        // 计算合适的媒体尺寸，考虑到最终需要适配512像素要求
+        const maxAllowedMediaSize = Math.min(maxMediaSize, 400 * scale) // 限制最大媒体尺寸
+        
+        // 保持原始宽高比
+        let aspectRatio = originalWidth / originalHeight
+        
+        if (originalWidth > originalHeight) {
+          // 宽度更大，以宽度为准
+          mediaWidth = Math.min(maxAllowedMediaSize, originalWidth)
+          mediaHeight = mediaWidth / aspectRatio
+        } else {
+          // 高度更大，以高度为准
+          mediaHeight = Math.min(maxAllowedMediaSize, originalHeight)
+          mediaWidth = mediaHeight * aspectRatio
         }
         
-        mediaWidth = Math.max(mediaWidth, 112 * scale)
-        mediaHeight = Math.max(mediaHeight, 150 * scale)
+        // 确保媒体尺寸不会太小
+        const minMediaSize = 150 * scale
+        if (mediaWidth < minMediaSize && mediaHeight < minMediaSize) {
+          if (mediaWidth > mediaHeight) {
+            mediaWidth = minMediaSize
+            mediaHeight = minMediaSize / aspectRatio
+          } else {
+            mediaHeight = minMediaSize
+            mediaWidth = minMediaSize * aspectRatio
+          }
+        }
+        
+        console.log(`动态媒体尺寸计算: 原始${originalWidth}x${originalHeight} -> 显示${Math.round(mediaWidth)}x${Math.round(mediaHeight)}`)
       } else {
+        // 静态媒体尺寸计算保持不变
         mediaWidth = media.width * (maxMediaSize / media.height)
         mediaHeight = maxMediaSize
 
@@ -951,65 +922,128 @@ class QuoteGenerate {
         }
       }
 
-      const mediaRequiredWidth = mediaWidth + blockPosX + indent * 1.69
+      // 根据媒体实际尺寸调整容器尺寸
+      const mediaRequiredWidth = mediaWidth + blockPosX + indent * 2
       if (width < mediaRequiredWidth) {
         width = mediaRequiredWidth
       }
 
-      height += mediaHeight + indent * 0.42 // 从0.56再减少到0.42 (再减少25%)
+      height += mediaHeight + indent * 0.5
 
       if (name) {
         mediaPosX = namePosX
-        mediaPosY = name.height + 4.5 * scale // 从6减少到4.5 (再减少25%)
+        mediaPosY = name.height + 6 * scale
       } else {
         mediaPosX = blockPosX + indent
-        mediaPosY = indent * 0.84 // 从1.12减少到0.84 (再减少25%)
+        mediaPosY = indent
       }
       if (replyName) mediaPosY += replyNamePosY + indent / 2
-      textPosY = mediaPosY + mediaHeight + 4.5 * scale // 从6减少到4.5 (再减少25%)
+      textPosY = mediaPosY + mediaHeight + 6 * scale
     }
 
-    // 对话框尺寸调整
+    // 智能尺寸调整 - 确保符合Telegram要求但不过度拉伸
+    const targetSize = 512 * scale
+    let finalScaleRatio = 1
+
+    // 只有当尺寸明显小于512时才进行放大
+    const minRequiredSize = targetSize * 0.7 // 至少要达到512的70%
+    
+    if (Math.max(width, height) < minRequiredSize) {
+      // 需要适度放大以符合Telegram要求
+      if (width >= height) {
+        finalScaleRatio = minRequiredSize / width
+      } else {
+        finalScaleRatio = minRequiredSize / height
+      }
+      
+      width = Math.round(width * finalScaleRatio)
+      height = Math.round(height * finalScaleRatio)
+      
+      // 缩放所有位置变量
+      namePosX = Math.round(namePosX * finalScaleRatio)
+      namePosY = Math.round(namePosY * finalScaleRatio)
+      textPosX = Math.round(textPosX * finalScaleRatio)
+      textPosY = Math.round(textPosY * finalScaleRatio)
+      
+      // 缩放媒体尺寸
+      if (media) {
+        mediaWidth = Math.round(mediaWidth * finalScaleRatio)
+        mediaHeight = Math.round(mediaHeight * finalScaleRatio)
+        mediaPosX = Math.round(mediaPosX * finalScaleRatio)
+        mediaPosY = Math.round(mediaPosY * finalScaleRatio)
+      }
+      
+      console.log(`智能缩放: 比例${finalScaleRatio.toFixed(2)}, 新尺寸${width}x${height}`)
+    }
+
+    // 最终确保一边是512像素（Telegram要求）
+    if (width !== targetSize && height !== targetSize) {
+      let finalRatio = 1
+      if (width >= height) {
+        finalRatio = targetSize / width
+        width = targetSize
+        height = Math.min(Math.round(height * finalRatio), targetSize)
+      } else {
+        finalRatio = targetSize / height
+        height = targetSize
+        width = Math.min(Math.round(width * finalRatio), targetSize)
+      }
+      
+      // 同步调整所有位置变量
+      if (finalRatio !== 1) {
+        namePosX = Math.round(namePosX * finalRatio)
+        namePosY = Math.round(namePosY * finalRatio)
+        textPosX = Math.round(textPosX * finalRatio)
+        textPosY = Math.round(textPosY * finalRatio)
+        
+        // 同步调整媒体尺寸
+        if (media) {
+          mediaWidth = Math.round(mediaWidth * finalRatio)
+          mediaHeight = Math.round(mediaHeight * finalRatio)
+          mediaPosX = Math.round(mediaPosX * finalRatio)
+          mediaPosY = Math.round(mediaPosY * finalRatio)
+        }
+      }
+      
+      console.log(`最终调整: 比例${finalRatio.toFixed(2)}, 最终尺寸${width}x${height}`)
+    }
+
+    // 对话框尺寸基于内容实际需要，而不是强制512
     let rectWidth = width - blockPosX
     let rectHeight = height
 
-    // 宽度保持不变，只缩短高度
-    rectWidth = Math.max(rectWidth, 142 * scale) // 宽度保持不变
-    rectHeight = Math.max(rectHeight, 76 * scale) // 从101减少到76 (再减少25%)
-
-    // 如果是动态媒体，适度增加对话框尺寸
-    if (media && (media.isAnimated || isAnimated)) {
-      rectWidth = Math.max(rectWidth, mediaWidth + indent * 1.12) // 宽度保持不变
-      rectHeight = Math.max(rectHeight, mediaHeight + (name ? name.height : 0) + indent * 1.27) // 从1.69减少到1.27 (再减少25%)
+    // 确保对话框能容纳媒体
+    if (media) {
+      rectWidth = Math.max(rectWidth, mediaWidth + indent * 2)
+      rectHeight = Math.max(rectHeight, mediaHeight + (name ? name.height : 0) + indent * 2)
     }
 
-    // 修改sticker的背景逻辑，确保总是显示对话框
+    // 最小尺寸要求
+    rectWidth = Math.max(rectWidth, 142 * scale)
+    rectHeight = Math.max(rectHeight, 76 * scale)
+
+    // 修改sticker的背景逻辑
     let useBackgroundRect = true
     if (mediaType === 'sticker' && !name && !replyName && !text) {
-      // 只有在纯sticker（无名字、无回复、无文字）时才不显示背景
       useBackgroundRect = false
     }
 
     if (mediaType === 'sticker' && (name || replyName || media.isAnimated)) {
       if (replyName && replyText) {
-        rectHeight = Math.max(rectHeight, (replyName.height + replyText.height * 0.5) + indent * 0.84) // 从1.12减少到0.84 (再减少25%)
+        rectHeight = Math.max(rectHeight, (replyName.height + replyText.height * 0.5) + indent * 1.5)
       } else if (name) {
-        rectHeight = Math.max(rectHeight, name.height + indent * 0.84) // 从1.12减少到0.84 (再减少25%)
+        rectHeight = Math.max(rectHeight, name.height + indent * 1.5)
       }
       
-      // 对于动态sticker，使用更明显的背景
+      // 对于动态sticker，使用适度的背景
       if (media && media.isAnimated) {
-        backgroundColorOne = backgroundColorTwo = 'rgba(30, 30, 30, 0.9)'
+        backgroundColorOne = backgroundColorTwo = 'rgba(30, 30, 30, 0.85)'
       } else {
-        backgroundColorOne = backgroundColorTwo = 'rgba(50, 50, 50, 0.8)'
+        backgroundColorOne = backgroundColorTwo = 'rgba(50, 50, 50, 0.75)'
       }
     }
 
-    // 重新计算canvas尺寸以适应调整后的对话框
-    const finalWidth = Math.max(width, rectWidth + blockPosX)
-    const finalHeight = Math.max(height, rectHeight + blockPosY)
-
-    const canvas = createCanvas(finalWidth, finalHeight)
+    const canvas = createCanvas(width, height)
     const canvasCtx = canvas.getContext('2d')
 
     const rectPosX = blockPosX
@@ -1018,7 +1052,7 @@ class QuoteGenerate {
 
     let rect
     
-    // 确保语录框总是被绘制
+    // 绘制语录框
     if (useBackgroundRect) {
       if (backgroundColorOne === backgroundColorTwo) {
         rect = this.drawRoundRect(backgroundColorOne, rectWidth, rectHeight, rectRoundRadius)
@@ -1029,7 +1063,7 @@ class QuoteGenerate {
 
     // 绘制头像（确保为圆形）
     if (avatar) {
-      const roundAvatar = this.roundAvatar(avatar, avatarSize / 2) // 使用专门的头像圆形函数
+      const roundAvatar = this.roundImage(avatar, avatarSize / 2)
       canvasCtx.drawImage(roundAvatar, avatarPosX, avatarPosY, avatarSize, avatarSize)
     }
     
@@ -1046,19 +1080,18 @@ class QuoteGenerate {
     if (media) {
       try {
         if (media.isAnimated && media.localPath) {
-          // 对于动态媒体，我们在静态层中完全跳过媒体绘制
-          // 动态内容将在视频合成阶段单独处理
-          console.log('为动态媒体预留空间:', `${mediaWidth}x${mediaHeight} at (${mediaPosX}, ${mediaPosY})`)
+          // 对于动态媒体，预留准确大小的空间
+          console.log(`为动态媒体预留空间: ${Math.round(mediaWidth)}x${Math.round(mediaHeight)} at (${Math.round(mediaPosX)}, ${Math.round(mediaPosY)})`)
+          
+          // 可选：绘制一个半透明的占位框来显示媒体区域
+          canvasCtx.save()
+          canvasCtx.fillStyle = 'rgba(100, 100, 100, 0.1)'
+          canvasCtx.fillRect(mediaPosX, mediaPosY, mediaWidth, mediaHeight)
+          canvasCtx.restore()
           
         } else if (media.width && media.height) {
-          // 对于静态媒体，根据媒体类型决定是否应用圆角
-          if (mediaType === 'sticker') {
-            // 贴纸保持原始形状，不应用圆角
-            canvasCtx.drawImage(media, mediaPosX, mediaPosY, mediaWidth, mediaHeight)
-          } else {
-            // 其他媒体类型（如照片）应用轻微圆角
-            canvasCtx.drawImage(this.roundImage(media, 5 * scale), mediaPosX, mediaPosY, mediaWidth, mediaHeight)
-          }
+          // 常规图片/Canvas对象
+          canvasCtx.drawImage(this.roundImage(media, 5 * scale), mediaPosX, mediaPosY, mediaWidth, mediaHeight)
         } else {
           console.error('媒体对象无效，跳过绘制')
         }
@@ -1074,15 +1107,15 @@ class QuoteGenerate {
       canvasCtx.drawImage(replyText, replyPosX, replyTextPosY)
     }
 
-    // 返回包含动态媒体信息和位置信信息的结果
+    // 返回包含准确动态媒体信息的结果
     return {
       canvas,
       animatedMedia: media && media.isAnimated ? {
         ...media,
-        mediaPosX,
-        mediaPosY,
-        mediaWidth,
-        mediaHeight
+        mediaPosX: Math.round(mediaPosX),
+        mediaPosY: Math.round(mediaPosY),
+        mediaWidth: Math.round(mediaWidth),
+        mediaHeight: Math.round(mediaHeight)
       } : null
     }
   }
