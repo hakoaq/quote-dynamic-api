@@ -89,6 +89,38 @@ route.get('/api/status', (ctx) => {
   };
 });
 
+// 添加根路径处理
+route.get('/', (ctx) => {
+  ctx.body = {
+    name: 'Quote API',
+    version: '1.0.0',
+    description: '动态语录生成API服务',
+    endpoints: {
+      status: '/api/status',
+      generate_static: '/generate',
+      generate_animated: '/generate.webm',
+      upload_webm: '/api/upload-webm',
+      generate_quote_webm: '/api/generate-quote-webm'
+    },
+    usage: {
+      static_quote: 'POST /generate',
+      animated_quote: 'POST /generate.webm',
+      health_check: 'GET /api/status'
+    },
+    timestamp: new Date().toISOString()
+  };
+});
+
+// 添加健康检查路由
+route.get('/health', (ctx) => {
+  ctx.body = { 
+    status: 'healthy',
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    timestamp: new Date().toISOString()
+  };
+});
+
 route.post('/api/upload-webm', upload.single('webm_file'), async (ctx) => {
   try {
     if (!ctx.req.file) {

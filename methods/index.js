@@ -5,7 +5,11 @@ const sizeof = require('object-sizeof')
 const generate = require('./generate')
 
 const methods = {
-  generate
+  generate,
+  // 添加别名支持
+  'generate.webm': generate,
+  'quote': generate,
+  'webm': generate
 }
 
 const cache = new LRU({
@@ -15,24 +19,46 @@ const cache = new LRU({
 })
 
 module.exports = async (method, parm) => {
-  if (methods[method]) {
+  // 清理方法名
+  const cleanMethod = method.replace(/\.(webm|png|webp)$/, '').replace(/^\/+/, '')
+  
+  // 查找方法
+  let targetMethod = methods[cleanMethod] || methods[method] || methods['generate']
+  
+  if (targetMethod) {
     let methodResult = {}
 
-    let cacheString = crypto.createHash('md5').update(JSON.stringify({ method, parm })).digest('hex')
+    // 生成缓存键
+    let cacheString = crypto.createHash('md5').update(JSON.stringify({ 
+      method: cleanMethod, 
+      parm: {
+        ...parm,
+        // 排除时间戳等动态字段
+        timestamp: undefined,
+        _t: undefined
+      }
+    })).digest('hex')
+    
     const methodResultCache = cache.get(cacheString)
 
     if (!methodResultCache) {
-      methodResult = await methods[method](parm)
+      console.log(`执行方法: ${cleanMethod}`)
+      methodResult = await targetMethod(parm)
 
-      if (!methodResult.error) cache.set(cacheString, methodResult)
+      if (!methodResult.error) {
+        cache.set(cacheString, methodResult)
+        console.log(`结果已缓存: ${cleanMethod}`)
+      }
     } else {
+      console.log(`使用缓存结果: ${cleanMethod}`)
       methodResult = methodResultCache
     }
 
     return methodResult
   } else {
+    console.log(`方法未找到: ${method} (cleaned: ${cleanMethod})`)
     return {
-      error: 'method not found'
+      error: `Method '${method}' not found. Available methods: ${Object.keys(methods).join(', ')}`
     }
   }
 }
