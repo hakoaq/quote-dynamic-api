@@ -252,6 +252,9 @@ route.get('/api/download/:filename', async (ctx) => {
 
 const routes = require('./routes')
 
+// 在通用路由之前添加具体路由
+route.use('/generate.webm', routes.routeApi.routes())
+route.use('/generate', routes.routeApi.routes())
 route.use('/*', routes.routeApi.routes())
 
 app.use(route.routes())

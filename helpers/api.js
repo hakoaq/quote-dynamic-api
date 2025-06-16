@@ -1,6 +1,9 @@
 module.exports = async (ctx, next) => {
   ctx.props = Object.assign(ctx.query || {}, ctx.request.body || {})
 
+  console.log(`API请求: ${ctx.method} ${ctx.path}`)
+  console.log(`Body大小: ${JSON.stringify(ctx.request.body || {}).length} 字符`)
+
   try {
     await next()
 
@@ -12,6 +15,7 @@ module.exports = async (ctx, next) => {
           return
         }
         
+        console.log(`404错误: 路径 ${ctx.path} 未找到方法`)
         ctx.status = 404
         ctx.body = {
           ok: false,
@@ -19,11 +23,12 @@ module.exports = async (ctx, next) => {
             code: 404,
             message: 'Method not found',
             path: ctx.path,
+            method: ctx.method,
             available_endpoints: [
-              '/generate - 生成静态语录',
-              '/generate.webm - 生成动态语录', 
-              '/api/status - 服务状态',
-              '/ - API信息'
+              'POST /generate - 生成静态语录',
+              'POST /generate.webm - 生成动态语录', 
+              'GET /api/status - 服务状态',
+              'GET / - API信息'
             ]
           }
         }
@@ -31,6 +36,7 @@ module.exports = async (ctx, next) => {
       }
 
       if (ctx.result.error) {
+        console.log(`API错误: ${ctx.result.error}`)
         ctx.status = 400
         ctx.body = {
           ok: false,
@@ -64,6 +70,7 @@ module.exports = async (ctx, next) => {
             }
           }
           
+          console.log(`发送${ctx.result.ext}文件, 大小: ${ctx.result.image.length} 字节`)
           ctx.body = ctx.result.image
         } else {
           ctx.body = {

@@ -20,7 +20,9 @@ const cache = new LRU({
 
 module.exports = async (method, parm) => {
   // 清理方法名
-  const cleanMethod = method.replace(/\.(webm|png|webp)$/, '').replace(/^\/+/, '')
+  const cleanMethod = method.replace(/\.(webm|png|webp)$/, '').replace(/^\/+/, '') || 'generate'
+  
+  console.log(`方法查找: 原始="${method}", 清理后="${cleanMethod}"`)
   
   // 查找方法
   let targetMethod = methods[cleanMethod] || methods[method] || methods['generate']
@@ -28,30 +30,34 @@ module.exports = async (method, parm) => {
   if (targetMethod) {
     let methodResult = {}
 
-    // 生成缓存键
-    let cacheString = crypto.createHash('md5').update(JSON.stringify({ 
-      method: cleanMethod, 
-      parm: {
-        ...parm,
-        // 排除时间戳等动态字段
-        timestamp: undefined,
-        _t: undefined
-      }
-    })).digest('hex')
+    // 生成缓存键，但动态内容不使用缓存
+    const isAnimated = parm && (parm.ext === 'webm' || parm.type === 'animated')
+    let cacheString = null
     
-    const methodResultCache = cache.get(cacheString)
-
-    if (!methodResultCache) {
-      console.log(`执行方法: ${cleanMethod}`)
-      methodResult = await targetMethod(parm)
-
-      if (!methodResult.error) {
-        cache.set(cacheString, methodResult)
-        console.log(`结果已缓存: ${cleanMethod}`)
+    if (!isAnimated) {
+      cacheString = crypto.createHash('md5').update(JSON.stringify({ 
+        method: cleanMethod, 
+        parm: {
+          ...parm,
+          // 排除时间戳等动态字段
+          timestamp: undefined,
+          _t: undefined
+        }
+      })).digest('hex')
+      
+      const methodResultCache = cache.get(cacheString)
+      if (methodResultCache) {
+        console.log(`使用缓存结果: ${cleanMethod}`)
+        return methodResultCache
       }
-    } else {
-      console.log(`使用缓存结果: ${cleanMethod}`)
-      methodResult = methodResultCache
+    }
+
+    console.log(`执行方法: ${cleanMethod}${isAnimated ? ' (动态内容, 跳过缓存)' : ''}`)
+    methodResult = await targetMethod(parm)
+
+    if (!methodResult.error && !isAnimated && cacheString) {
+      cache.set(cacheString, methodResult)
+      console.log(`结果已缓存: ${cleanMethod}`)
     }
 
     return methodResult

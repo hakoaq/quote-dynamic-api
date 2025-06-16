@@ -50,7 +50,13 @@ const imageAlpha = (image, alpha) => {
 }
 
 module.exports = async (parm) => {
-  // console.log(JSON.stringify(parm, null, 2))
+  console.log('Generate方法调用，参数:', {
+    messageCount: parm?.messages?.length || 0,
+    type: parm?.type,
+    ext: parm?.ext,
+    hasAnimatedMedia: parm?.messages?.some(m => m?.media?.is_animated) || false
+  })
+  
   if (!parm) return { error: 'query_empty' }
   if (!parm.messages || parm.messages.length < 1) return { error: 'messages_empty' }
 
@@ -139,6 +145,7 @@ module.exports = async (parm) => {
       // 检查是否有动态内容
       if (canvasQuote.isAnimated || canvasQuote.animatedMedia) {
         hasAnimatedContent = true
+        console.log('检测到动态内容')
       }
     }
   }
@@ -149,12 +156,26 @@ module.exports = async (parm) => {
     }
   }
 
-  // 如果有动态内容，生成动态WebM
-  if (hasAnimatedContent) {
+  // 强制检查参数中的动态媒体标记
+  const forceAnimated = parm.ext === 'webm' || parm.type === 'animated'
+  if (forceAnimated) {
+    hasAnimatedContent = true
+    console.log('强制启用动态语录生成')
+  }
+
+  // 如果有动态内容或强制动态，生成动态WebM
+  if (hasAnimatedContent || forceAnimated) {
     try {
+      console.log('开始生成动态语录')
       return await generateAnimatedQuote(quoteImages, parm, backgroundColorOne, backgroundColorTwo)
     } catch (error) {
       console.error('动态语录生成失败，回退到静态:', error)
+      // 如果是强制动态模式，返回错误而不是回退
+      if (forceAnimated) {
+        return {
+          error: `动态语录生成失败: ${error.message}`
+        }
+      }
       // 继续生成静态版本
     }
   }
