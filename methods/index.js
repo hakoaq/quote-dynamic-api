@@ -19,15 +19,21 @@ const cache = new LRU({
 })
 
 module.exports = async (method, parm) => {
-  // 清理方法名
-  const cleanMethod = method.replace(/\.(webm|png|webp)$/, '').replace(/^\/+/, '') || 'generate'
+  console.log(`🔍 方法查找开始:`)
+  console.log(`  - 输入方法: "${method}"`)
+  console.log(`  - 参数类型: ${parm ? Object.keys(parm).join(', ') : '无'}`)
+  console.log(`  - 可用方法: ${Object.keys(methods).join(', ')}`)
   
-  console.log(`方法查找: 原始="${method}", 清理后="${cleanMethod}"`)
+  // 清理方法名
+  const cleanMethod = (method || 'generate').replace(/\.(webm|png|webp)$/, '').replace(/^\/+/, '') || 'generate'
+  console.log(`  - 清理后方法: "${cleanMethod}"`)
   
   // 查找方法
   let targetMethod = methods[cleanMethod] || methods[method] || methods['generate']
   
   if (targetMethod) {
+    console.log(`  - ✅ 找到方法处理器`)
+    
     let methodResult = {}
 
     // 生成缓存键，但动态内容不使用缓存
@@ -47,22 +53,29 @@ module.exports = async (method, parm) => {
       
       const methodResultCache = cache.get(cacheString)
       if (methodResultCache) {
-        console.log(`使用缓存结果: ${cleanMethod}`)
+        console.log(`  - 🎯 使用缓存结果`)
         return methodResultCache
       }
     }
 
-    console.log(`执行方法: ${cleanMethod}${isAnimated ? ' (动态内容, 跳过缓存)' : ''}`)
-    methodResult = await targetMethod(parm)
-
-    if (!methodResult.error && !isAnimated && cacheString) {
-      cache.set(cacheString, methodResult)
-      console.log(`结果已缓存: ${cleanMethod}`)
+    console.log(`  - 🚀 执行方法: ${cleanMethod}${isAnimated ? ' (动态内容, 跳过缓存)' : ''}`)
+    
+    try {
+      methodResult = await targetMethod(parm)
+      console.log(`  - ✅ 方法执行成功`)
+      
+      if (!methodResult.error && !isAnimated && cacheString) {
+        cache.set(cacheString, methodResult)
+        console.log(`  - 💾 结果已缓存`)
+      }
+    } catch (error) {
+      console.error(`  - ❌ 方法执行错误:`, error)
+      methodResult = { error: error.message }
     }
 
     return methodResult
   } else {
-    console.log(`方法未找到: ${method} (cleaned: ${cleanMethod})`)
+    console.log(`  - ❌ 方法未找到: ${method} (cleaned: ${cleanMethod})`)
     return {
       error: `Method '${method}' not found. Available methods: ${Object.keys(methods).join(', ')}`
     }

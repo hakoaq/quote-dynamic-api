@@ -4,53 +4,86 @@ const api = new Router()
 const method = require('../methods')
 
 const apiHandle = async (ctx) => {
-  // 改进路由处理逻辑，确保ctx.props存在
-  if (!ctx.props) {
-    ctx.props = Object.assign(ctx.query || {}, ctx.request.body || {})
-  }
+  // 初始化props
+  ctx.props = Object.assign(ctx.query || {}, ctx.request.body || {})
   
-  // 获取请求路径，移除前导斜杠
-  const path = ctx.params[0] ? ctx.params[0].replace(/^\/+/, '') : ctx.path.replace(/^\//, '')
-  console.log('处理请求路径:', path)
+  // 获取路径并清理
+  const fullPath = ctx.path
+  console.log('API请求路径:', fullPath)
+  console.log('Body大小:', JSON.stringify(ctx.request.body || {}).length, '字符')
+  
+  let methodName = 'generate'
+  let isWebm = false
   
   // 检查是否为WebM请求
-  const webmMatch = path.match(/^(.*)\.webm$/)
-  
-  if (webmMatch) {
-    console.log('检测到WebM请求:', webmMatch[1])
+  if (fullPath === '/generate.webm' || fullPath.endsWith('.webm')) {
+    isWebm = true
     ctx.props.ext = 'webm'
     ctx.props.type = 'animated'
-    ctx.result = await method(webmMatch[1] || 'generate', ctx.props)
+    console.log('检测到WebM请求')
+  } else if (fullPath === '/generate') {
+    console.log('检测到静态请求')
   } else {
-    // 处理其他扩展名
-    const otherExtMatch = path.match(/^(.*)\.(?:png|webp)$/)
-    if (otherExtMatch) {
-      ctx.props.ext = path.match(/\.(.+)$/)[1]
-      console.log('检测到其他格式请求:', otherExtMatch[1], '扩展名:', ctx.props.ext)
-    }
-    
-    const methodName = otherExtMatch ? otherExtMatch[1] : (path || 'generate')
-    console.log('调用方法:', methodName)
+    console.log('未知请求路径:', fullPath)
+  }
+  
+  try {
+    console.log(`调用方法: ${methodName}, WebM: ${isWebm}`)
     ctx.result = await method(methodName, ctx.props)
+    console.log('方法执行成功')
+  } catch (error) {
+    console.error('方法执行失败:', error)
+    ctx.result = { error: error.message }
   }
 }
 
-// 明确的路由定义，按优先级排序
+// 明确定义每个路由
 api.post('/generate.webm', async (ctx) => {
-  console.log('直接WebM路由匹配')
-  ctx.props = Object.assign(ctx.query || {}, ctx.request.body || {})
-  ctx.props.ext = 'webm'
-  ctx.props.type = 'animated'
-  ctx.result = await method('generate', ctx.props)
+  console.log('✅ WebM路由匹配: /generate.webm')
+  await apiHandle(ctx)
 })
 
 api.post('/generate', async (ctx) => {
-  console.log('直接generate路由匹配')
-  ctx.props = Object.assign(ctx.query || {}, ctx.request.body || {})
-  ctx.result = await method('generate', ctx.props)
+  console.log('✅ 静态路由匹配: /generate')
+  await apiHandle(ctx)
 })
 
-// 通用路由作为备用
-api.post('/*', apiHandle)
+// 捕获其他可能的变体
+api.post('/generate.png', async (ctx) => {
+  console.log('✅ PNG路由匹配: /generate.png')
+  await apiHandle(ctx)
+})
+
+api.post('/generate.webp', async (ctx) => {
+  console.log('✅ WebP路由匹配: /generate.webp')
+  await apiHandle(ctx)
+})
+
+// 通用捕获器（最后）
+api.post('/(.*)', async (ctx, next) => {
+  const path = ctx.params[0]
+  console.log('通用路由捕获:', path)
+  
+  if (path && (path.includes('generate') || path === '')) {
+    await apiHandle(ctx)
+  } else {
+    console.log('404错误: 路径', ctx.path, '未找到方法')
+    ctx.status = 404
+    ctx.body = {
+      ok: false,
+      error: {
+        code: 404,
+        message: 'Method not found',
+        path: ctx.path,
+        available_endpoints: [
+          '/generate - 生成静态语录',
+          '/generate.webm - 生成动态语录',
+          '/generate.png - 生成PNG格式',
+          '/generate.webp - 生成WebP格式'
+        ]
+      }
+    }
+  }
+})
 
 module.exports = api

@@ -1,8 +1,11 @@
 module.exports = async (ctx, next) => {
+  // 添加请求日志
+  console.log(`📨 ${ctx.method} ${ctx.path}`)
+  if (ctx.request.body && Object.keys(ctx.request.body).length > 0) {
+    console.log(`📄 请求体包含字段: ${Object.keys(ctx.request.body).join(', ')}`)
+  }
+  
   ctx.props = Object.assign(ctx.query || {}, ctx.request.body || {})
-
-  console.log(`API请求: ${ctx.method} ${ctx.path}`)
-  console.log(`Body大小: ${JSON.stringify(ctx.request.body || {}).length} 字符`)
 
   try {
     await next()
@@ -12,10 +15,11 @@ module.exports = async (ctx, next) => {
       if (!ctx.result) {
         // 如果是根路径或健康检查等，不返回404
         if (ctx.path === '/' || ctx.path === '/health' || ctx.path.startsWith('/api/')) {
+          console.log(`⏭️ 跳过处理: ${ctx.path}`)
           return
         }
         
-        console.log(`404错误: 路径 ${ctx.path} 未找到方法`)
+        console.log(`❌ 404错误: 路径 ${ctx.path} 未找到结果`)
         ctx.status = 404
         ctx.body = {
           ok: false,
@@ -23,12 +27,11 @@ module.exports = async (ctx, next) => {
             code: 404,
             message: 'Method not found',
             path: ctx.path,
-            method: ctx.method,
             available_endpoints: [
-              'POST /generate - 生成静态语录',
-              'POST /generate.webm - 生成动态语录', 
-              'GET /api/status - 服务状态',
-              'GET / - API信息'
+              '/generate - 生成静态语录',
+              '/generate.webm - 生成动态语录', 
+              '/api/status - 服务状态',
+              '/ - API信息'
             ]
           }
         }
@@ -36,7 +39,7 @@ module.exports = async (ctx, next) => {
       }
 
       if (ctx.result.error) {
-        console.log(`API错误: ${ctx.result.error}`)
+        console.log(`❌ 业务错误: ${ctx.result.error}`)
         ctx.status = 400
         ctx.body = {
           ok: false,
@@ -70,9 +73,10 @@ module.exports = async (ctx, next) => {
             }
           }
           
-          console.log(`发送${ctx.result.ext}文件, 大小: ${ctx.result.image.length} 字节`)
+          console.log(`✅ 返回二进制文件: ${ctx.result.ext}, 大小: ${ctx.result.image ? ctx.result.image.length : 0} bytes`)
           ctx.body = ctx.result.image
         } else {
+          console.log(`✅ 返回JSON结果`)
           ctx.body = {
             ok: true,
             result: ctx.result
@@ -81,7 +85,7 @@ module.exports = async (ctx, next) => {
       }
     }
   } catch (error) {
-    console.error('API Error:', error)
+    console.error('💥 API处理错误:', error)
     ctx.status = error.statusCode || error.status || 500
     ctx.body = {
       ok: false,

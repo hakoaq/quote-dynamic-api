@@ -252,15 +252,14 @@ route.get('/api/download/:filename', async (ctx) => {
 
 const routes = require('./routes')
 
-// 在通用路由之前添加具体路由
-route.use('/generate.webm', routes.routeApi.routes())
-route.use('/generate', routes.routeApi.routes())
-route.use('/*', routes.routeApi.routes())
-
+// 修复路由配置顺序和匹配
 app.use(route.routes())
+app.use(routes.routeApi.routes())
+app.use(routes.routeApi.allowedMethods())
 
 const port = process.env.PORT || 3000
 
 app.listen(port, () => {
   console.log('Listening on localhost, port', port)
 })
+
